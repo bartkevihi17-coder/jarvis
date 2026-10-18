@@ -380,7 +380,16 @@ def main():
     args = parser.parse_args()
     if args.check:
         return check()
-    Jarvis(minimized=args.minimized).run()
+    mutex = None
+    if os.name == "nt":
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\JarvisPessoalV01")
+        if ctypes.windll.kernel32.GetLastError() == 183:
+            return 0  # Keep only one listening assistant.
+    try:
+        Jarvis(minimized=args.minimized).run()
+    finally:
+        if mutex:
+            ctypes.windll.kernel32.CloseHandle(mutex)
     return 0
 
 
