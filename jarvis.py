@@ -13,9 +13,10 @@ import tempfile
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import unicodedata
-from collections import deque
+from conversation_context import ConversationContext
+from audio_control import PlaybackControl
 from pathlib import Path
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -30,6 +31,7 @@ LOG = logging.getLogger("jarvis")
 MODEL = ROOT / "models" / "vosk-model-small-pt-0.3"
 LLM = "qwen2.5:1.5b"
 VOICE = "pt-BR-AntonioNeural"
+CONTEXT_FILE = DATA / "context.json"
 DEFAULT_AUDIO = "Padrao do Windows"
 AUDIO_CONFIG = DATA / "audio-settings.json"
 STOP = (
@@ -42,7 +44,7 @@ WAKE = (
     r"\b(?:liga|ligar|acorda|acordar|ativa|ativar)\s+(?:o )?(?:jarvis|javis|jarves|javes|jarwis|jarvi)\b",
 )
 SYSTEM = ("Voce e Jarvis, um assistente pessoal por voz em portugues brasileiro. "
-          "Converse naturalmente, com memoria do dialogo, de forma objetiva e inteligente. "
+          "Converse naturalmente, com memoria do dialogo, de forma objetiva e inteligente. Considere as mensagens anteriores ao responder perguntas de continuacao, inclusive pronomes como ele, ela e isso. Se nao houver contexto suficiente, pergunte em vez de inventar. "
           "Nao invente fatos nem afirme ter controlado o PC: esta versao so conversa. "
           "Para perguntas simples, responda preferencialmente em ate tres frases. "
           "Voce e independente de qualquer empresa, servidor corporativo ou credencial de trabalho.")
@@ -80,17 +82,17 @@ class Gate:
 
 
 class Brain:
-    def __init__(self):
-        self.memory = deque(maxlen=10)
+    def __init__(self, store=None):
+        self.context = store or ConversationContext(CONTEXT_FILE)
 
-    def ask(self, q):
+    def ask(self, q, still_current=lambda: True):
         start = time.perf_counter()
+        previous = self.context.snapshot()
         payload = json.dumps({"model": LLM, "messages": [
-            {"role": "system", "content": SYSTEM}, *list(self.memory),
+            {"role": "system", "content": SYSTEM}, *previous,
             {"role": "user", "content": q}
         ], "stream": False, "options": {
-            "temperature": 0.18, "num_predict": 110,
-            "num_ctx": 1536, "num_thread": 2
+            "temperature": 0.18, "num_predict": 128, "num_ctx": 2048, "num_thread": 2
         }}, ensure_ascii=False).encode("utf-8")
         req = Request("http://127.0.0.1:11434/api/chat", payload,
                       {"Content-Type": "application/json"}, method="POST")
@@ -102,9 +104,12 @@ class Brain:
             raise RuntimeError("IA local indisponivel: Ollama/Qwen nao esta pronto na porta 11434.") from exc
         if not answer:
             raise RuntimeError("O modelo local retornou uma resposta vazia.")
-        LOG.info("LLM request_ms=%.0f output_chars=%d", (time.perf_counter()-start)*1000, len(answer))
-        self.memory.extend(({"role": "user", "content": q},
-                            {"role": "assistant", "content": answer}))
+        if not still_current():
+            LOG.info("LLM response discarded because user interrupted")
+            return ""
+        self.context.remember(q, answer)
+        LOG.info("LLM request_ms=%.0f output_chars=%d previous_messages=%d",
+                 (time.perf_counter()-start)*1000, len(answer), len(previous))
         return answer
 
 
@@ -181,42 +186,44 @@ def prepare_wake_voice():
         tmp.unlink(missing_ok=True)
 
 
-def synthesize_and_play(text, busy, output_device):
-    """Edge neural voice, with instant cached wake acknowledgement and chosen output."""
+def synthesize_and_play(text, playback, output_device, still_current=lambda: True):
+    """Synthesise natural speech and let the listener interrupt playback."""
     import edge_tts
     import numpy as np
     import sounddevice as sd
     import soundfile as sf
-    busy.set()
     temp = None
     t = time.perf_counter()
     try:
+        if not still_current():
+            return False
         if text.strip() == "Estou ouvindo." and WAKE_VOICE.is_file():
             file = WAKE_VOICE
         else:
             temp = Path(tempfile.gettempdir()) / ("jarvis-" + uuid4().hex + ".mp3")
             asyncio.run(edge_tts.Communicate(text, VOICE, rate="+5%").save(str(temp)))
             file = temp
+        if not still_current():
+            return False
         generated = (time.perf_counter() - t) * 1000
         audio, sample_rate = sf.read(str(file), dtype="float32", always_2d=False)
         d = sd.query_devices(output_device, "output") if output_device is not None else sd.query_devices(kind="output")
         target_rate = int(round(d["default_samplerate"]))
         if target_rate != sample_rate:
             x = np.arange(len(audio), dtype=np.float32)
-            output_indices = np.arange(0, len(audio), sample_rate / target_rate,
-                                       dtype=np.float32)
+            output_indices = np.arange(0, len(audio), sample_rate / target_rate, dtype=np.float32)
             if getattr(audio, "ndim", 1) == 2:
                 audio = np.stack([np.interp(output_indices, x, audio[:, channel])
                                   for channel in range(audio.shape[1])], axis=1)
             else:
                 audio = np.interp(output_indices, x, audio)
             sample_rate = target_rate
-        sd.play(audio.astype(np.float32), sample_rate, device=output_device, blocking=True)
-        LOG.info("TTS generation_ms=%.0f playback_ms=%.0f device=%s text_chars=%d",
-                 generated, (time.perf_counter()-t)*1000-generated, str(output_device), len(text))
+        finished = playback.play(audio.astype(np.float32), sample_rate,
+                                 output_device, still_current)
+        LOG.info("TTS generation_ms=%.0f playback_ms=%.0f completed=%s text_chars=%d",
+                 generated, (time.perf_counter()-t)*1000-generated, finished, len(text))
+        return finished
     finally:
-        sd.stop()
-        busy.clear()
         if temp is not None:
             temp.unlink(missing_ok=True)
 
@@ -257,7 +264,9 @@ class Jarvis:
         self.queue = queue.Queue()
         self.stop = threading.Event()
         self.restart_mic = threading.Event()
-        self.speaking = threading.Event()
+        self.playback = PlaybackControl()
+        self.speaking = self.playback.speaking
+        self.turn_id = 0
         self.audio = AudioPreferences()
         self.gate = Gate()
         self.brain = Brain()
@@ -272,7 +281,7 @@ class Jarvis:
         bg, card, fg, muted, accent = "#0b111b", "#172335", "#eff7ff", "#9aaec5", "#5ac8fa"
         tk.Label(self.root, text="J A R V I S", bg=bg, fg=accent,
                  font=("Segoe UI Semibold", 23)).pack(pady=(17, 2))
-        tk.Label(self.root, text="ASSISTENTE PESSOAL  /  V0.3 BETA", bg=bg, fg=muted,
+        tk.Label(self.root, text="ASSISTENTE PESSOAL  /  V0.4 | INTERRUPCAO + CONTEXTO", bg=bg, fg=muted,
                  font=("Segoe UI", 9)).pack()
         self.status = tk.StringVar(value="Preparando microfone...")
         tk.Label(self.root, textvariable=self.status, bg=bg, fg=fg,
@@ -325,6 +334,8 @@ class Jarvis:
         self.toggle_button.pack(side="left", fill="x", expand=True, padx=(0, 6))
         tk.Button(actions, text="Ocultar painel", command=self.hide, bg=card, fg=fg,
                   bd=0, pady=9).pack(side="left", fill="x", expand=True)
+        tk.Button(actions, text="Limpar contexto", command=self.clear_context, bg=card, fg=fg,
+                  bd=0, pady=9).pack(side="left", fill="x", expand=True, padx=(6, 0))
 
         tk.Label(self.root, text="TRANSCRICOES  /  OUVIDO E RESPOSTAS",
                  bg=bg, fg=muted, font=("Segoe UI Semibold", 9),
@@ -406,77 +417,105 @@ class Jarvis:
     def heard(self, phrase):
         self.queue.put(("heard", phrase))
 
+    def current(self, turn):
+        return turn == self.turn_id and not self.stop.is_set()
+
+    def interrupt_current(self, reason="Interrompido para ouvir voce."):
+        self.turn_id += 1
+        self.playback.interrupt()
+        self.working = False
+        self.add("Sistema", reason, "system")
+
+    def clear_context(self):
+        if messagebox.askyesno("Jarvis", "Apagar a memoria de conversa salva neste PC?"):
+            self.brain.context.clear()
+            self.add("Sistema", "Contexto apagado apenas deste computador.", "system")
+
     def handle(self, text):
         now = time.monotonic()
         if normalize(text) == self.last[0] and now - self.last[1] < 2:
             return
         self.last = (normalize(text), now)
-        # Keep an explicit transcript even when muted and ignoring the phrase.
         self.add("OUVIDO / TRANSCRICAO", text, "heard")
         action, q = self.gate.decide(text)
         self.refresh_state()
         if action == "ignore":
             return
         if action == "sleep":
-            self.add("Sistema", "Jarvis silenciado. Continuo ouvindo.", "system")
+            if self.working:
+                self.interrupt_current("Jarvis silenciado.")
+            else:
+                self.add("Sistema", "Jarvis silenciado. Continuo ouvindo.", "system")
             return
         if self.working:
-            self.add("Sistema", "Aguarde a resposta atual.", "system")
-            return
+            if self.speaking.is_set():
+                self.interrupt_current()
+            else:
+                self.add("Sistema", "Aguarde a resposta atual.", "system")
+                return
+        self.turn_id += 1
+        turn = self.turn_id
         self.working = True
         if action == "wake":
-            threading.Thread(target=self.answer_wake, daemon=True).start()
+            threading.Thread(target=self.answer_wake, args=(turn,), daemon=True).start()
         elif action == "ask":
             self.status.set("Pensando...")
-            threading.Thread(target=self.answer, args=(q,), daemon=True).start()
+            threading.Thread(target=self.answer, args=(q, turn), daemon=True).start()
 
     def test_voice(self):
         if self.working:
-            self.add("Sistema", "Aguarde a fala atual terminar.", "system")
-            return
+            self.interrupt_current("Teste de audio interrompido.")
+        self.turn_id += 1
+        turn = self.turn_id
         self.working = True
         sample = "Ola! Eu sou o Jarvis e esta e a minha saida de voz selecionada."
-        self.queue.put(("reply", sample))
-        threading.Thread(target=self.speak_test, args=(sample,), daemon=True).start()
+        self.queue.put(("reply", turn, sample))
+        threading.Thread(target=self.speak_test, args=(sample, turn), daemon=True).start()
 
-    def speak_test(self, message):
+    def speak_test(self, message, turn):
         try:
-            synthesize_and_play(message, self.speaking,
-                                self.audio.device("output"))
+            synthesize_and_play(message, self.playback, self.audio.device("output"),
+                                lambda: self.current(turn))
         except Exception as exc:
             LOG.exception("Voice test failed")
-            self.queue.put(("error", "Saida de voz: " + str(exc)))
+            if self.current(turn):
+                self.queue.put(("error", str(exc)))
         finally:
-            self.queue.put(("done",))
+            self.queue.put(("done", turn))
 
-    def answer_wake(self):
+    def answer_wake(self, turn):
         try:
-            self.queue.put(("reply", "Estou ouvindo."))
-            synthesize_and_play("Estou ouvindo.", self.speaking,
-                                self.audio.device("output"))
+            if self.current(turn):
+                self.queue.put(("reply", turn, "Estou ouvindo."))
+                synthesize_and_play("Estou ouvindo.", self.playback,
+                                    self.audio.device("output"),
+                                    lambda: self.current(turn))
         except Exception as exc:
-            self.queue.put(("error", str(exc)))
+            if self.current(turn):
+                self.queue.put(("error", str(exc)))
         finally:
-            self.queue.put(("done",))
+            self.queue.put(("done", turn))
 
-    def answer(self, q):
+    def answer(self, q, turn):
         try:
-            a = self.brain.ask(q)
-            if self.gate.enabled and not self.stop.is_set():
+            a = self.brain.ask(q, lambda: self.current(turn))
+            if a and self.current(turn) and self.gate.enabled:
                 speech = re.sub(r"[#*_]+", "", a)[:850]
-                self.queue.put(("reply", speech))
-                synthesize_and_play(speech, self.speaking,
-                                    self.audio.device("output"))
+                self.queue.put(("reply", turn, speech))
+                synthesize_and_play(speech, self.playback, self.audio.device("output"),
+                                    lambda: self.current(turn))
         except Exception as exc:
             LOG.exception("Answer failed")
-            self.queue.put(("error", str(exc)))
+            if self.current(turn):
+                self.queue.put(("error", str(exc)))
         finally:
-            self.queue.put(("done",))
+            self.queue.put(("done", turn))
 
     def listen(self):
         from speech_engine import SpeechEngine
         SpeechEngine(ROOT / "models" / "whisper", self.audio, self.speaking,
-                     self.stop, self.restart_mic, self.queue.put).run()
+                     self.stop, self.restart_mic, self.queue.put,
+                     playback=self.playback).run()
 
     def poll(self):
         if self.stop.is_set():
@@ -490,7 +529,11 @@ class Jarvis:
             if tag == "heard":
                 self.handle(data[0])
             elif tag == "reply":
-                self.add("JARVIS VAI FALAR", data[0], "reply")
+                if self.current(data[0]):
+                    self.add("JARVIS VAI FALAR", data[1], "reply")
+            elif tag == "barge_in":
+                if self.working:
+                    self.interrupt_current()
             elif tag == "error":
                 self.add("ERRO", data[0], "error")
                 self.status.set("Erro: verifique o painel")
@@ -499,8 +542,9 @@ class Jarvis:
             elif tag == "loading":
                 self.status.set(data[0])
             elif tag == "done":
-                self.working = False
-                self.refresh_state()
+                if self.current(data[0]):
+                    self.working = False
+                    self.refresh_state()
             elif tag == "open":
                 self.show()
             elif tag == "toggle":
@@ -533,6 +577,8 @@ class Jarvis:
         self.root.lift()
 
     def exit(self):
+        self.turn_id += 1
+        self.playback.interrupt()
         self.stop.set()
         self.restart_mic.set()
         if self.tray:
