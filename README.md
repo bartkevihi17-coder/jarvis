@@ -1,4 +1,4 @@
-# Jarvis pessoal V0.3
+# Jarvis pessoal V0.4
 
 Assistente por voz para Windows, independente da Enfoque e de qualquer servidor corporativo. O reconhecimento de fala e a IA funcionam localmente; a voz neural pt-BR-AntonioNeural usa o servico gratuito do Microsoft Edge TTS e precisa de internet.
 
@@ -16,7 +16,7 @@ O instalador cria um ambiente isolado de Python, baixa Whisper em portugues, ins
 - Fechar o painel o esconde; para encerrar o processo de verdade, use o icone do Jarvis ao lado do relogio e clique **Sair do Jarvis**.
 - Se nao quiser falar, digite no campo inferior e tecle Enter.
 
-**Limites:** esta V0.1 conversa, mas ainda nao controla arquivos, teclado nem mouse. O modelo e pequeno para rodar em CPUs antigas e pode levar segundos para responder. A voz neural depende da internet. Nao existem respostas falsas de fallback quando o modelo falha.
+**Limites:** esta V0.4 conversa, mas ainda nao controla arquivos, teclado nem mouse. O modelo e pequeno para rodar em CPUs antigas e pode levar segundos para responder. A voz neural depende da internet. Nao existem respostas falsas de fallback quando o modelo falha.
 
 
 ## Painel de audio e transcricoes (V0.2)
@@ -43,3 +43,14 @@ O repositorio e pessoal. Nao publica modelos locais, dados de microfone, chaves,
 A captura agora calibra o nivel de ruido ao iniciar. O reconhecimento usa Whisper-tiny local com palavras-chave de contexto, sem enviar audio para nuvem. O comando de ativacao curto usa uma voz natural pregerada em cache para evitar a latencia de sintetizar a mesma frase a cada chamada. O motor conversacional continua local e requer Ollama + Qwen2.5 na porta 11434. Nao ha resposta artificial quando a IA estiver offline: o erro e exibido no painel.
 
 Teste completo sintetico: `.venv\Scripts\python.exe test_jarvis_v03.py` (gera amostras de fala e testa comandos; requer internet para o gerador de vozes). Logs em `%LOCALAPPDATA%\Jarvis\jarvis.log`.
+
+
+## V0.4 - Interromper a fala e lembrar do contexto
+
+- **Interromper falando (barge-in):** o microfone permanece ativo enquanto Jarvis responde. Se detectar o inicio de uma nova fala, a reproducao da resposta atual para e a nova frase e transcrita. A resposta anterior nao e repetida nem enviada ao historico se for cancelada antes de estar pronta.
+- **Protecao contra eco:** um filtro compara a voz sintetizada em reproducao com o audio captado pelo microfone e tenta evitar que Jarvis se interrompa. O filtro nao e um cancelador acustico perfeito: para jogos e caixas de som, prefira fones de ouvido ou um microfone direcional.
+- **Contexto:** perguntas subsequentes utilizam um trecho limitado das ultimas conversas com a IA. Mensagens de conversas completas ficam salvas localmente em `%LOCALAPPDATA%\Jarvis\context.json` (ate 16 pares, sem gravacao de audio). O arquivo nao e enviado para o GitHub nem para servidores corporativos.
+- **Apagar memoria:** use o botao "Limpar contexto" no painel para apagar o historico persistido.
+- **Teste automatizado:** execute `\.venv\Scripts\python.exe test_interrupt_context.py` para testar interrupcoes rapidas, supressao de eco e memoria entre execucoes. A validacao completa da interrupcao com a sua voz real deve ser feita no microfone escolhido.
+
+O modelo Qwen e o reconhecimento Whisper rodam localmente. A sintese de voz natural usa o servico gratuito Edge TTS pela internet e envia o texto a ser falado para esse servico.
