@@ -17,6 +17,7 @@ from tkinter import ttk, messagebox
 import unicodedata
 from conversation_context import ConversationContext
 from audio_control import PlaybackControl
+from hybrid_stt import SpeechSettings
 from pathlib import Path
 from urllib.request import Request, urlopen
 from uuid import uuid4
@@ -268,6 +269,7 @@ class Jarvis:
         self.speaking = self.playback.speaking
         self.turn_id = 0
         self.audio = AudioPreferences()
+        self.stt_settings = SpeechSettings(DATA / "stt-settings.json")
         self.gate = Gate()
         self.brain = Brain()
         self.working = False
@@ -281,7 +283,7 @@ class Jarvis:
         bg, card, fg, muted, accent = "#0b111b", "#172335", "#eff7ff", "#9aaec5", "#5ac8fa"
         tk.Label(self.root, text="J A R V I S", bg=bg, fg=accent,
                  font=("Segoe UI Semibold", 23)).pack(pady=(17, 2))
-        tk.Label(self.root, text="ASSISTENTE PESSOAL  /  V0.4 | INTERRUPCAO + CONTEXTO", bg=bg, fg=muted,
+        tk.Label(self.root, text="ASSISTENTE PESSOAL  /  V0.5 | VOZ HIBRIDA GRATIS", bg=bg, fg=muted,
                  font=("Segoe UI", 9)).pack()
         self.status = tk.StringVar(value="Preparando microfone...")
         tk.Label(self.root, textvariable=self.status, bg=bg, fg=fg,
@@ -325,6 +327,11 @@ class Jarvis:
                   bg="#30445b", fg=fg, bd=0, padx=12, pady=8).pack(side="left")
         tk.Button(controls, text="Testar saida de voz", command=self.test_voice,
                   bg="#30445b", fg=fg, bd=0, padx=12, pady=8).pack(side="left", padx=(8, 0))
+        tk.Button(controls, text="Transcricao IA", command=self.open_stt_settings,
+                  bg="#30445b", fg=fg, bd=0, padx=12, pady=8).pack(side="left", padx=(8, 0))
+        self.stt_status = tk.StringVar(value="Transcricao local (Groq opcional nas configuracoes)")
+        tk.Label(settings, textvariable=self.stt_status, bg=card, fg=muted,
+                 font=("Segoe UI", 8), anchor="w").pack(fill="x", pady=(8, 0))
         self.refresh_devices()
 
         actions = tk.Frame(self.root, bg=bg)
@@ -362,6 +369,72 @@ class Jarvis:
         tk.Button(form, text="Enviar", command=self.submit, bg=accent, fg=bg,
                   bd=0, padx=16, pady=11).pack(side="right", padx=(8, 0))
         self.refresh_state()
+
+    def open_stt_settings(self):
+        """Configure optional free cloud ASR without ever showing the stored secret."""
+        win = tk.Toplevel(self.root)
+        win.title("Jarvis | Reconhecimento de voz")
+        win.configure(bg="#0b111b")
+        win.geometry("540x350")
+        win.resizable(False, False)
+        win.transient(self.root)
+        bg, card, fg, muted, accent = "#0b111b", "#172335", "#eff7ff", "#9aaec5", "#5ac8fa"
+        tk.Label(win, text="RECONHECIMENTO DE VOZ", font=("Segoe UI Semibold", 14),
+                 fg=accent, bg=bg).pack(pady=(18, 8))
+        options = {
+            "Automático — Groq grátis + Whisper local": "auto",
+            "Somente Whisper local": "local",
+            "Groq grátis — volta ao local se falhar": "groq",
+        }
+        selected = tk.StringVar(value=next((k for k, v in options.items()
+                                            if v == self.stt_settings.mode), list(options)[0]))
+        picker = ttk.Combobox(win, values=list(options), state="readonly",
+                              textvariable=selected, width=48)
+        picker.pack(padx=22, fill="x")
+        tk.Label(win, text="A nuvem só recebe trechos de áudio quando a chave estiver configurada.",
+                 bg=bg, fg=muted, wraplength=490).pack(padx=16, pady=(9, 10))
+        key = tk.Entry(win, show="*", bg=card, fg=fg, insertbackground=fg,
+                       font=("Segoe UI", 10), bd=0)
+        key.pack(padx=22, fill="x", ipady=8)
+        key.insert(0, "")
+        status = tk.StringVar()
+        status_text = tk.Label(win, textvariable=status, bg=bg, fg=muted,
+                               wraplength=490)
+        status_text.pack(pady=9)
+        def update_status(message=""):
+            if message:
+                status.set(message)
+            else:
+                status.set("Chave Groq configurada no Windows." if self.stt_settings.get_key()
+                           else "Sem chave: funciona só com Whisper local, sem enviar áudio.")
+        update_status()
+        def save():
+            try:
+                self.stt_settings.set_mode(options[selected.get()])
+                if key.get().strip():
+                    self.stt_settings.set_key(key.get())
+                    key.delete(0, "end")
+                update_status("Preferências salvas. " + (
+                    "Groq ativada para próximas falas." if self.stt_settings.get_key() and
+                    self.stt_settings.mode != "local" else "Reconhecimento local ativo."))
+            except Exception as exc:
+                status.set("Não foi possível salvar: " + str(exc))
+        def remove():
+            try:
+                self.stt_settings.set_key("")
+                update_status("Chave removida do Windows. A voz continuará local.")
+            except Exception as exc:
+                status.set("Não foi possível remover a chave: " + str(exc))
+        row = tk.Frame(win, bg=bg)
+        row.pack(pady=4)
+        tk.Button(row, text="Salvar preferências", command=save, bg=accent, fg="#0b111b",
+                  bd=0, padx=14, pady=7).pack(side="left", padx=4)
+        tk.Button(row, text="Remover chave", command=remove, bg=card, fg=fg,
+                  bd=0, padx=10, pady=7).pack(side="left", padx=4)
+        tk.Button(row, text="Fechar", command=win.destroy, bg=card, fg=fg,
+                  bd=0, padx=10, pady=7).pack(side="left", padx=4)
+        tk.Label(win, text="Chaves gratuitas: https://console.groq.com/keys",
+                 bg=bg, fg=accent).pack(pady=9)
 
     def refresh_devices(self):
         try:
@@ -515,7 +588,7 @@ class Jarvis:
         from speech_engine import SpeechEngine
         SpeechEngine(ROOT / "models" / "whisper", self.audio, self.speaking,
                      self.stop, self.restart_mic, self.queue.put,
-                     playback=self.playback).run()
+                     playback=self.playback, stt_settings=self.stt_settings).run()
 
     def poll(self):
         if self.stop.is_set():
@@ -537,6 +610,8 @@ class Jarvis:
             elif tag == "error":
                 self.add("ERRO", data[0], "error")
                 self.status.set("Erro: verifique o painel")
+            elif tag == "stt_method":
+                self.stt_status.set(data[0])
             elif tag == "ready":
                 self.refresh_state()
             elif tag == "loading":
