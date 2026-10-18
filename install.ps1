@@ -13,7 +13,7 @@ Write-Host "[1/5] Instalando bibliotecas do Jarvis..."
 & $py -m pip install --disable-pip-version-check -r (Join-Path $root "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "Falha ao instalar bibliotecas" }
 $modelPath = Join-Path $root "models\vosk-model-small-pt-0.3"
-if (-not (Test-Path (Join-Path $modelPath "conf\model.conf"))) {
+if ((-not (Test-Path (Join-Path $modelPath "conf\model.conf"))) -and (-not (Test-Path (Join-Path $modelPath "final.mdl")))) {
     Write-Host "[2/5] Baixando reconhecimento de voz portugues..."
     $folder = Join-Path $root "models"
     New-Item -ItemType Directory -Force $folder | Out-Null
