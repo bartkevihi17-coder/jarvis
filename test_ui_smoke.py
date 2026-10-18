@@ -17,7 +17,7 @@ assert len(app.output_combo["values"])>1
 app.handle("Jarvis desligar")
 app.root.update()
 assert not app.gate.enabled
-app.handle("OlÃ¡ Javes")
+app.handle("Olá Javes")
 app.root.update()
 assert app.gate.enabled
 # Wait until neural acknowledgement finishes. Real selected audio device is exercised.
@@ -28,7 +28,7 @@ while app.working and time.monotonic()<deadline:
 app.root.update()
 transcript=app.chat.get("1.0","end")
 assert "Jarvis desligar" in transcript
-assert "OlÃ¡ Javes" in transcript
+assert "Olá Javes" in transcript
 assert "JARVIS VAI FALAR" in transcript,transcript[-500:]
 assert "Estou ouvindo." in transcript
 assert not app.working
