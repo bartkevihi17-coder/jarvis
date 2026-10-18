@@ -18,6 +18,15 @@ O instalador cria um ambiente isolado de Python, baixa Vosk portugues, instala o
 
 **Limites:** esta V0.1 conversa, mas ainda nao controla arquivos, teclado nem mouse. O modelo e pequeno para rodar em CPUs antigas e pode levar segundos para responder. A voz neural depende da internet. Nao existem respostas falsas de fallback quando o modelo falha.
 
+
+## Painel de audio e transcricoes (V0.2)
+
+- **Microfone:** no painel, abra o campo "MICROFONE | O que Jarvis escuta", selecione uma entrada e o Jarvis reiniciara apenas a captura. "Atualizar dispositivos" recarrega a lista.
+- **Saida de voz:** escolha o alto-falante ou fone em "SAIDA DE VOZ | Onde Jarvis fala". O audio MP3 neural e decodificado e direcionado pelo PortAudio, em vez de usar sempre o dispositivo padrao. Use "Testar saida de voz" para ouvir uma frase curta.
+- **Transcricoes:** o quadro "TRANSCRICOES / OUVIDO E RESPOSTAS" mostra com horario as frases reconhecidas no microfone, inclusive enquanto Jarvis esta silenciado, e exibe "JARVIS VAI FALAR" com o texto gerado antes da reproducao. A V0.2 exibe apenas a sessao atual (nao grava conversas no Git).
+- A selecao fica armazenada somente no PC em \`%LOCALAPPDATA%\Jarvis\audio-settings.json\`; o Git nao envia esse arquivo.
+- O painel pode ficar oculto sem encerrar o microfone. Para encerrar, clique no icone do Jarvis perto do relogio e selecione "Sair do Jarvis".
+
 ## Arquivos
 
 - `jarvis.py`: interface, bandeja Windows, microfone, Vosk, TTS e modelo local.
