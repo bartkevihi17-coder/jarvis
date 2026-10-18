@@ -84,7 +84,7 @@ class Segmenter:
 
 
 class SpeechEngine:
-    def __init__(self, model_root, audio, speaking, stop, restart, post):
+    def __init__(self, model_root, audio, speaking, stop, restart, post, playback=None):
         self.model_root = Path(model_root)
         self.audio = audio
         self.speaking = speaking
@@ -92,6 +92,7 @@ class SpeechEngine:
         self.restart = restart
         self.post = post
         self.model = None
+        self.playback = playback
 
     def load(self, download=False):
         t = time.perf_counter()
@@ -133,7 +134,7 @@ class SpeechEngine:
                 device = self.audio.device("input")
 
                 def callback(indata, count, timestamp, flags):
-                    if self.speaking.is_set() or self.stop.is_set():
+                    if self.stop.is_set():
                         return
                     try:
                         frames.put_nowait(bytes(indata))
@@ -150,25 +151,30 @@ class SpeechEngine:
                     self.restart.clear()
                     self.post(("ready",))
                     LOG.info("MIC started device=%s rate=%d", str(device), RATE)
+                    interrupted = False
                     while not self.stop.is_set() and not self.restart.is_set():
-                        if self.speaking.is_set():
-                            seg.reset()
-                            while not frames.empty():
-                                try:
-                                    frames.get_nowait()
-                                except queue.Empty:
-                                    break
-                            time.sleep(0.06)
-                            continue
                         try:
                             chunk = frames.get(timeout=0.2)
                         except queue.Empty:
                             continue
+                        # The playback keeps a short local reference so Jarvis
+                        # does not normally interrupt itself via microphone echo.
+                        if self.speaking.is_set() and self.playback is not None:
+                            if self.playback.is_echo(chunk):
+                                continue
                         utterance = seg.push(chunk)
+                        if (self.speaking.is_set() and self.playback is not None
+                                and seg.active and seg.speech_frames >= 3
+                                and not interrupted):
+                            if self.playback.interrupt():
+                                self.post(("barge_in",))
+                                LOG.info("BARGE_IN detected - interrupting spoken answer")
+                                interrupted = True
                         if utterance is not None:
                             text, latency = self.transcribe(utterance)
                             if text and not self.stop.is_set() and not self.restart.is_set():
                                 self.post(("heard", text))
+                            interrupted = False
             except Exception as exc:
                 LOG.exception("Microphone processing failure")
                 self.post(("error", "Microfone/reconhecimento: " + str(exc)))
