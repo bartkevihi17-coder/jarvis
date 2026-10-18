@@ -18,7 +18,7 @@ LOG = logging.getLogger("jarvis")
 RATE = 16000
 FRAME = 1600
 MODEL_NAME = "tiny"
-CONTEXT = "PortuguÃªs brasileiro. O assistente se chama Jarvis. OlÃ¡ Jarvis. Jarvis ligar. Jarvis desligar."
+CONTEXT = "Português brasileiro. O assistente se chama Jarvis. Olá Jarvis. Jarvis ligar. Jarvis desligar."
 
 
 class Segmenter:
