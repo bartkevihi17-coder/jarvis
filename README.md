@@ -1,4 +1,4 @@
-# Jarvis pessoal V0.4
+# Jarvis pessoal V0.5
 
 Assistente por voz para Windows, independente da Enfoque e de qualquer servidor corporativo. O reconhecimento de fala e a IA funcionam localmente; a voz neural pt-BR-AntonioNeural usa o servico gratuito do Microsoft Edge TTS e precisa de internet.
 
@@ -54,3 +54,21 @@ Teste completo sintetico: `.venv\Scripts\python.exe test_jarvis_v03.py` (gera am
 - **Teste automatizado:** execute `\.venv\Scripts\python.exe test_interrupt_context.py` para testar interrupcoes rapidas, supressao de eco e memoria entre execucoes. A validacao completa da interrupcao com a sua voz real deve ser feita no microfone escolhido.
 
 O modelo Qwen e o reconhecimento Whisper rodam localmente. A sintese de voz natural usa o servico gratuito Edge TTS pela internet e envia o texto a ser falado para esse servico.
+
+## V0.5 - Reconhecimento hibrido (sem API paga do ChatGPT)
+
+O Jarvis oferece tres modos, configuraveis no painel em **Transcricao IA**:
+
+- **Automatico (Groq gratuita + Whisper local):** se voce salvar uma chave do GroqCloud, envia *somente a frase detectada* para o `whisper-large-v3-turbo`, depois processa a transcricao normalmente com o Qwen local. Se a chave nao existir, a cota acabar, ou a rede falhar, usa o Whisper Tiny local.
+- **Somente Whisper local:** nunca envia audio para Groq, mesmo que exista uma chave.
+- **Groq gratuita com fallback:** mesma protecao de fallback, preferindo nuvem com chave valida.
+
+**Como ativar:** crie sua propria chave no plano Free em https://console.groq.com/keys, sem cadastrar faturamento. Abra Jarvis pelo atalho somente quando quiser, clique em **Transcricao IA**, escolha **Automatico**, cole sua chave no campo oculto e clique **Salvar preferencias**. O token fica no **Gerenciador de Credenciais do Windows** via `keyring`, nunca no repositorio. Nao cole a chave em mensagens de chat ou no GitHub.
+
+**Limites de seguranca internos:** 8 requisicoes por minuto, 250 por dia, uma hora de audio por dia, no maximo 12 segundos por frase. Ao atingir qualquer limite, o reconhecimento volta ao local. Groq estabelece cotas proprias que podem mudar; o modo gratuito depende de sua conta permanecer no plano Free, portanto o Jarvis nao configura cobranca nem garante que uma conta ja paga nao cobre uso. Testes sem chave nao enviam audio.
+
+**Privacidade:** quando Groq estiver habilitada, trechos captados do microfone sao enviados pela internet ao provedor externo para transcricao. A memoria da conversa/Qwen continua local. O Jarvis nao guarda arquivos WAV enviados e nao registra a chave nem o conteudo das falas nos logs de diagnostico. O provedor tem sua propria politica de dados.
+
+**Offline:** funciona normalmente sem internet para reconhecimento Tiny e Qwen; a voz neural Antonio continua exigindo internet Edge TTS, como antes. O Jarvis nao foi configurado para iniciar automaticamente com o Windows.
+
+**Testes:** `\.venv\Scripts\python.exe test_hybrid_stt.py` para validar fallback, formato da API, privacidade e limites sem chave real.
