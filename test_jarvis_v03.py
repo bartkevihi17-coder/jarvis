@@ -16,15 +16,15 @@ from speech_engine import Segmenter, SpeechEngine
 
 ROOT=Path(__file__).resolve().parent
 phrases=[
-    ("OlÃ¡, Jarvis", "wake"),
-    ("Jarvis, quanto Ã© dois mais dois?", "ask"),
+    ("Olá, Jarvis", "wake"),
+    ("Jarvis, quanto é dois mais dois?", "ask"),
     ("Jarvis, desligar", "sleep"),
-    ("Qual Ã© a previsÃ£o do tempo, Jarvis?", "ask"),
+    ("Qual é a previsão do tempo, Jarvis?", "ask"),
 ]
 gate=Gate()
 assert gate.decide("Jarvis desligar")[0]=="sleep"
-assert gate.decide("VocÃª tÃ¡ me ouvindo?")[0]=="ignore"
-assert gate.decide("OlÃ¡ Javes")[0]=="wake"
+assert gate.decide("Você tá me ouvindo?")[0]=="ignore"
+assert gate.decide("Olá Javes")[0]=="wake"
 assert gate.decide("desliga Javes")[0]=="sleep"
 assert gate.decide("Jarvis, ligar")[0]=="wake"
 print("GATE_TEST_OK",flush=True)
