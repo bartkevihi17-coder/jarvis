@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import ctypes
 import json
+import hashlib
 import logging
 import os
 import queue
@@ -18,6 +19,7 @@ from collections import deque
 from pathlib import Path
 from urllib.request import Request, urlopen
 from uuid import uuid4
+from urllib.error import URLError
 
 ROOT = Path(__file__).resolve().parent
 DATA = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "Jarvis"
@@ -31,13 +33,13 @@ VOICE = "pt-BR-AntonioNeural"
 DEFAULT_AUDIO = "Padrao do Windows"
 AUDIO_CONFIG = DATA / "audio-settings.json"
 STOP = (
-    r"\bjarvis\s+(?:desliga|desligar|desligue|dorme|durma|descansa|descansar|descanse|silencio|cale a boca|fica quieto)\b",
-    r"\b(?:desliga|desligar|desligue|dorme|durma|descansa|descansar|descanse|silencio)\s+(?:o )?jarvis\b",
+    r"\b(?:jarvis|javis|jarves|javes|jarwis|jarvi)\s+(?:desliga|desligar|desligue|dorme|durma|descansa|descansar|descanse|silencio|cale a boca|fica quieto)\b",
+    r"\b(?:desliga|desligar|desligue|dorme|durma|descansa|descansar|descanse|silencio)\s+(?:o )?(?:jarvis|javis|jarves|javes|jarwis|jarvi)\b",
     r"\b(?:hora de dormir|vai dormir|pode dormir|pode descansar)\b",
 )
 WAKE = (
-    r"\bjarvis\s+(?:liga|ligar|acorda|acordar|volta|retorna|ativar|ativa)\b",
-    r"\b(?:liga|ligar|acorda|acordar|ativa|ativar)\s+(?:o )?jarvis\b",
+    r"\b(?:jarvis|javis|jarves|javes|jarwis|jarvi)\s+(?:liga|ligar|acorda|acordar|volta|retorna|ativar|ativa)\b",
+    r"\b(?:liga|ligar|acorda|acordar|ativa|ativar)\s+(?:o )?(?:jarvis|javis|jarves|javes|jarwis|jarvi)\b",
 )
 SYSTEM = ("Voce e Jarvis, um assistente pessoal por voz em portugues brasileiro. "
           "Converse naturalmente, com memoria do dialogo, de forma objetiva e inteligente. "
@@ -63,37 +65,44 @@ class Gate:
         if any(re.search(p, n) for p in STOP):
             self.enabled = False
             return "sleep", ""
-        has_name = bool(re.search(r"\b(?:jarvis|javis|jarves)\b", n))
+        has_name = bool(re.search(r"\b(?:jarvis|javis|jarves|javes|jarwis|jarvi)\b", n))
         if not self.enabled and not has_name:
             return "ignore", ""
         explicit = any(re.search(p, n) for p in WAKE)
         self.enabled = True
-        q = re.sub(r"\b(?:jarvis|javis|jarves)\b", " ", phrase, flags=re.I).strip(" ,.!?")
+        q = re.sub(r"\b(?:jarvis|javis|jarves|javes|jarwis|jarvi)\b", " ", phrase, flags=re.I).strip(" ,.!?")
         if explicit:
             q = re.sub(r"\b(?:liga|ligar|acorda|acordar|volta|retorna|ativar|ativa)\b",
                        " ", q, flags=re.I).strip(" ,.!?")
-        if not q or len(q) < 3:
+        if not q or normalize(q) in ("ola", "oi", "e ai", "bom dia", "boa tarde", "boa noite"):
             return "wake", ""
         return "ask", q
 
 
 class Brain:
     def __init__(self):
-        self.memory = deque(maxlen=12)
+        self.memory = deque(maxlen=10)
 
     def ask(self, q):
+        start = time.perf_counter()
         payload = json.dumps({"model": LLM, "messages": [
             {"role": "system", "content": SYSTEM}, *list(self.memory),
             {"role": "user", "content": q}
         ], "stream": False, "options": {
-            "temperature": 0.65, "num_predict": 180, "num_ctx": 2048, "num_thread": 2
+            "temperature": 0.18, "num_predict": 110,
+            "num_ctx": 1536, "num_thread": 2
         }}, ensure_ascii=False).encode("utf-8")
         req = Request("http://127.0.0.1:11434/api/chat", payload,
                       {"Content-Type": "application/json"}, method="POST")
-        with urlopen(req, timeout=180) as resp:
-            answer = json.load(resp)["message"]["content"].strip()
+        try:
+            with urlopen(req, timeout=120) as resp:
+                answer = json.load(resp)["message"]["content"].strip()
+        except (URLError, TimeoutError, OSError) as exc:
+            LOG.error("LLM connection failed after %.2fs: %s", time.perf_counter() - start, exc)
+            raise RuntimeError("IA local indisponivel: Ollama/Qwen nao esta pronto na porta 11434.") from exc
         if not answer:
-            raise RuntimeError("O modelo nao retornou nenhuma resposta.")
+            raise RuntimeError("O modelo local retornou uma resposta vazia.")
+        LOG.info("LLM request_ms=%.0f output_chars=%d", (time.perf_counter()-start)*1000, len(answer))
         self.memory.extend(({"role": "user", "content": q},
                             {"role": "assistant", "content": answer}))
         return answer
@@ -152,34 +161,76 @@ class AudioPreferences:
         return choices[label]
 
 
-def synthesize_and_play(text, busy, output_device):
-    """Generate natural Edge voice and route decoded MP3 to selected speaker."""
+WAKE_VOICE = DATA / "wake-antonio.mp3"
+
+
+def prepare_wake_voice():
+    """Preload only the activation phrase, never cache private conversations."""
+    if WAKE_VOICE.is_file() and WAKE_VOICE.stat().st_size > 2000:
+        return
     import edge_tts
+    tmp = DATA / ("wake-" + uuid4().hex + ".mp3")
+    try:
+        start = time.perf_counter()
+        asyncio.run(edge_tts.Communicate("Estou ouvindo.", VOICE, rate="+5%").save(str(tmp)))
+        tmp.replace(WAKE_VOICE)
+        LOG.info("TTS wake cache_ms=%.0f", (time.perf_counter()-start)*1000)
+    except Exception:
+        LOG.exception("Could not prewarm voice")
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def synthesize_and_play(text, busy, output_device):
+    """Edge neural voice, with instant cached wake acknowledgement and chosen output."""
+    import edge_tts
+    import numpy as np
     import sounddevice as sd
     import soundfile as sf
-    tmp = Path(tempfile.gettempdir()) / ("jarvis-" + uuid4().hex + ".mp3")
     busy.set()
+    temp = None
+    t = time.perf_counter()
     try:
-        asyncio.run(edge_tts.Communicate(text, VOICE, rate="+5%").save(str(tmp)))
-        audio, sample_rate = sf.read(str(tmp), dtype="float32", always_2d=False)
-        # sounddevice uses PortAudio, so the output device is selected explicitly.
-        sd.play(audio, sample_rate, device=output_device, blocking=True)
+        if text.strip() == "Estou ouvindo." and WAKE_VOICE.is_file():
+            file = WAKE_VOICE
+        else:
+            temp = Path(tempfile.gettempdir()) / ("jarvis-" + uuid4().hex + ".mp3")
+            asyncio.run(edge_tts.Communicate(text, VOICE, rate="+5%").save(str(temp)))
+            file = temp
+        generated = (time.perf_counter() - t) * 1000
+        audio, sample_rate = sf.read(str(file), dtype="float32", always_2d=False)
+        d = sd.query_devices(output_device, "output") if output_device is not None else sd.query_devices(kind="output")
+        target_rate = int(round(d["default_samplerate"]))
+        if target_rate != sample_rate:
+            x = np.arange(len(audio), dtype=np.float32)
+            output_indices = np.arange(0, len(audio), sample_rate / target_rate,
+                                       dtype=np.float32)
+            if getattr(audio, "ndim", 1) == 2:
+                audio = np.stack([np.interp(output_indices, x, audio[:, channel])
+                                  for channel in range(audio.shape[1])], axis=1)
+            else:
+                audio = np.interp(output_indices, x, audio)
+            sample_rate = target_rate
+        sd.play(audio.astype(np.float32), sample_rate, device=output_device, blocking=True)
+        LOG.info("TTS generation_ms=%.0f playback_ms=%.0f device=%s text_chars=%d",
+                 generated, (time.perf_counter()-t)*1000-generated, str(output_device), len(text))
     finally:
         sd.stop()
         busy.clear()
-        tmp.unlink(missing_ok=True)
+        if temp is not None:
+            temp.unlink(missing_ok=True)
 
 
 def check():
     import importlib
     issues = []
-    for name in ("vosk", "sounddevice", "soundfile", "edge_tts", "pystray", "PIL"):
+    for name in ("faster_whisper", "sounddevice", "soundfile", "edge_tts", "pystray", "PIL"):
         try:
             importlib.import_module(name)
         except Exception as exc:
             issues.append(name + ": " + str(exc))
-    if not ((MODEL / "conf" / "model.conf").exists() or (MODEL / "final.mdl").exists()):
-        issues.append("Modelo Vosk portugues nao instalado")
+    if not (ROOT / "models" / "whisper").exists():
+        issues.append("Modelo Whisper portugues nao instalado")
     try:
         with urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as r:
             d = json.load(r)
@@ -197,7 +248,7 @@ def check():
 class Jarvis:
     def __init__(self, minimized=False):
         self.root = tk.Tk()
-        self.root.title("JARVIS | Assistente pessoal")
+        self.root.title("JARVIS | Assistente pessoal - Beta STT")
         self.root.geometry("675x760")
         self.root.minsize(530, 590)
         self.root.configure(bg="#0b111b")
@@ -221,7 +272,7 @@ class Jarvis:
         bg, card, fg, muted, accent = "#0b111b", "#172335", "#eff7ff", "#9aaec5", "#5ac8fa"
         tk.Label(self.root, text="J A R V I S", bg=bg, fg=accent,
                  font=("Segoe UI Semibold", 23)).pack(pady=(17, 2))
-        tk.Label(self.root, text="ASSISTENTE PESSOAL  /  V0.2", bg=bg, fg=muted,
+        tk.Label(self.root, text="ASSISTENTE PESSOAL  /  V0.3 BETA", bg=bg, fg=muted,
                  font=("Segoe UI", 9)).pack()
         self.status = tk.StringVar(value="Preparando microfone...")
         tk.Label(self.root, textvariable=self.status, bg=bg, fg=fg,
@@ -423,60 +474,9 @@ class Jarvis:
             self.queue.put(("done",))
 
     def listen(self):
-        import sounddevice as sd
-        from vosk import Model, KaldiRecognizer, SetLogLevel
-        try:
-            SetLogLevel(-1)
-            model = Model(str(MODEL))
-        except Exception as exc:
-            LOG.exception("Speech recognition model unavailable")
-            self.queue.put(("error", "Reconhecimento: " + str(exc)))
-            return
-        while not self.stop.is_set():
-            try:
-                rec = KaldiRecognizer(model, 16000)
-                audio_q = queue.Queue(maxsize=24)
-                device_id = self.audio.device("input")
-
-                def callback(data, frames, t, status):
-                    if not self.speaking.is_set() and not self.stop.is_set():
-                        try:
-                            audio_q.put_nowait(bytes(data))
-                        except queue.Full:
-                            try:
-                                audio_q.get_nowait()
-                                audio_q.put_nowait(bytes(data))
-                            except queue.Empty:
-                                pass
-
-                with sd.RawInputStream(samplerate=16000, channels=1, device=device_id,
-                                       blocksize=4000, dtype="int16", callback=callback):
-                    self.restart_mic.clear()
-                    self.queue.put(("ready",))
-                    while not self.stop.is_set() and not self.restart_mic.is_set():
-                        if self.speaking.is_set():
-                            rec.Reset()
-                            while not audio_q.empty():
-                                try: audio_q.get_nowait()
-                                except queue.Empty: break
-                            time.sleep(0.1)
-                            continue
-                        try:
-                            data = audio_q.get(timeout=0.2)
-                        except queue.Empty:
-                            continue
-                        if rec.AcceptWaveform(data):
-                            phrase = json.loads(rec.Result()).get("text", "").strip()
-                            if phrase:
-                                self.heard(phrase)
-            except Exception as exc:
-                LOG.exception("Microphone failed")
-                self.queue.put(("error", "Microfone: " + str(exc)))
-                # Wait for a different device selection rather than retry in a tight loop.
-                while not self.stop.is_set() and not self.restart_mic.wait(0.3):
-                    pass
-            finally:
-                self.restart_mic.clear()
+        from speech_engine import SpeechEngine
+        SpeechEngine(ROOT / "models" / "whisper", self.audio, self.speaking,
+                     self.stop, self.restart_mic, self.queue.put).run()
 
     def poll(self):
         if self.stop.is_set():
@@ -496,6 +496,8 @@ class Jarvis:
                 self.status.set("Erro: verifique o painel")
             elif tag == "ready":
                 self.refresh_state()
+            elif tag == "loading":
+                self.status.set(data[0])
             elif tag == "done":
                 self.working = False
                 self.refresh_state()
@@ -538,6 +540,7 @@ class Jarvis:
         self.root.destroy()
 
     def run(self):
+        threading.Thread(target=prepare_wake_voice, daemon=True, name="JarvisWakeVoice").start()
         threading.Thread(target=self.tray_run, daemon=True, name="JarvisTray").start()
         threading.Thread(target=self.listen, daemon=True, name="JarvisMic").start()
         self.root.mainloop()
