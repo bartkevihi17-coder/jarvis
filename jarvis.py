@@ -132,7 +132,7 @@ def check():
             importlib.import_module(name)
         except Exception as exc:
             issues.append(name + ": " + str(exc))
-    if not (MODEL / "conf" / "model.conf").exists():
+    if not ((MODEL / "conf" / "model.conf").exists() or (MODEL / "final.mdl").exists()):
         issues.append("Modelo Vosk portugues nao instalado")
     try:
         with urlopen("http://127.0.0.1:11434/api/tags", timeout=3) as r:
