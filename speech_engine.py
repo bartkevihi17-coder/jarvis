@@ -13,12 +13,13 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 from faster_whisper import WhisperModel
+from hybrid_stt import GroqSpeech, NoCloudService, SpeechSettings
 
 LOG = logging.getLogger("jarvis")
 RATE = 16000
 FRAME = 1600
 MODEL_NAME = "tiny"
-CONTEXT = "Português brasileiro. O assistente se chama Jarvis. Olá Jarvis. Jarvis ligar. Jarvis desligar."
+CONTEXT = "Conversa em português brasileiro. Jarvis, Fortnite, The Walking Dead, League of Legends, Project Zomboid. Olá Jarvis. Jarvis ligar. Jarvis desligar. Quanto é dois mais dois?"
 
 
 class Segmenter:
@@ -84,7 +85,7 @@ class Segmenter:
 
 
 class SpeechEngine:
-    def __init__(self, model_root, audio, speaking, stop, restart, post, playback=None):
+    def __init__(self, model_root, audio, speaking, stop, restart, post, playback=None, stt_settings=None):
         self.model_root = Path(model_root)
         self.audio = audio
         self.speaking = speaking
@@ -93,6 +94,8 @@ class SpeechEngine:
         self.post = post
         self.model = None
         self.playback = playback
+        self.stt_settings = stt_settings or SpeechSettings(Path.home() / ".jarvis-stt.json")
+        self.cloud = GroqSpeech(self.stt_settings, self.stt_settings.path.with_name("stt-free-usage.json"))
 
     def load(self, download=False):
         t = time.perf_counter()
@@ -104,9 +107,18 @@ class SpeechEngine:
                  MODEL_NAME, (time.perf_counter() - t) * 1000)
 
     def transcribe(self, audio):
+        t = time.perf_counter()
+        if self.cloud.enabled():
+            try:
+                cloud_text = self.cloud.transcribe(audio)
+                elapsed = (time.perf_counter() - t) * 1000
+                LOG.info("ASR method=groq-free ms=%.0f samples=%d chars=%d", elapsed, len(audio), len(cloud_text))
+                self.post(("stt_method", "Groq Online: transcricao pela nuvem"))
+                return cloud_text, elapsed
+            except NoCloudService as exc:
+                LOG.info("ASR groq-free not used: %s; fallback=local", str(exc))
         if self.model is None:
             self.load()
-        t = time.perf_counter()
         segments, info = self.model.transcribe(
             audio, language="pt", beam_size=2, best_of=1,
             condition_on_previous_text=False, without_timestamps=True,
@@ -114,7 +126,8 @@ class SpeechEngine:
             repetition_penalty=1.05)
         transcript = " ".join(segment.text.strip() for segment in segments).strip()
         elapsed = (time.perf_counter() - t) * 1000
-        LOG.info("ASR phrase_ms=%.0f samples=%d transcript_chars=%d", elapsed,
+        self.post(("stt_method", "Whisper local: transcricao no computador"))
+        LOG.info("ASR method=whisper-tiny phrase_ms=%.0f samples=%d transcript_chars=%d", elapsed,
                  len(audio), len(transcript))
         return transcript, elapsed
 
