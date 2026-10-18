@@ -1,4 +1,4 @@
-# Jarvis pessoal V0.1
+# Jarvis pessoal V0.3
 
 Assistente por voz para Windows, independente da Enfoque e de qualquer servidor corporativo. O reconhecimento de fala e a IA funcionam localmente; a voz neural pt-BR-AntonioNeural usa o servico gratuito do Microsoft Edge TTS e precisa de internet.
 
@@ -6,7 +6,7 @@ Assistente por voz para Windows, independente da Enfoque e de qualquer servidor 
 
 No desktop, abra a pasta Jarvis na Area de Trabalho e execute **Instalar Jarvis.bat**. Ou pelo PowerShell: `powershell -ExecutionPolicy Bypass -File .\install.ps1`.
 
-O instalador cria um ambiente isolado de Python, baixa Vosk portugues, instala o Ollama, baixa o modelo Qwen2.5:1.5b, valida a inicializacao e registra o app para iniciar com Windows. Depois use **Iniciar Jarvis.bat**.
+O instalador cria um ambiente isolado de Python, baixa Whisper em portugues, instala o Ollama, baixa o modelo Qwen2.5:1.5b, valida a inicializacao e registra o app para iniciar com Windows. Depois use **Iniciar Jarvis.bat**.
 
 ## Como usar
 
@@ -29,7 +29,7 @@ O instalador cria um ambiente isolado de Python, baixa Vosk portugues, instala o
 
 ## Arquivos
 
-- `jarvis.py`: interface, bandeja Windows, microfone, Vosk, TTS e modelo local.
+- `jarvis.py`: interface, bandeja Windows, microfone, Whisper, TTS e modelo local.
 - `install.ps1`: instalador e validacao.
 - `requirements.txt`: dependencias.
 - `models/` e `.venv/`: baixados localmente e ignorados pelo Git.
@@ -37,3 +37,9 @@ O instalador cria um ambiente isolado de Python, baixa Vosk portugues, instala o
 **Diagnostico:** `.\.venv\Scripts\python.exe .\jarvis.py --check`. Logs em `%LOCALAPPDATA%\Jarvis\jarvis.log`.
 
 O repositorio e pessoal. Nao publica modelos locais, dados de microfone, chaves, logs nem conversas.
+
+## Diagnostico e testes V0.3
+
+A captura agora calibra o nivel de ruido ao iniciar. O reconhecimento usa Whisper-tiny local com palavras-chave de contexto, sem enviar audio para nuvem. O comando de ativacao curto usa uma voz natural pregerada em cache para evitar a latencia de sintetizar a mesma frase a cada chamada. O motor conversacional continua local e requer Ollama + Qwen2.5 na porta 11434. Nao ha resposta artificial quando a IA estiver offline: o erro e exibido no painel.
+
+Teste completo sintetico: `.venv\Scripts\python.exe test_jarvis_v03.py` (gera amostras de fala e testa comandos; requer internet para o gerador de vozes). Logs em `%LOCALAPPDATA%\Jarvis\jarvis.log`.
