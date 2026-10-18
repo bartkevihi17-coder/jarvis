@@ -1,0 +1,5 @@
+vosk==0.3.45
+sounddevice>=0.5,<0.6
+edge-tts>=7,<8
+pystray>=0.19,<0.21
+Pillow>=11,<13
