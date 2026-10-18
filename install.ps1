@@ -12,16 +12,11 @@ if (-not (Test-Path $py)) {
 Write-Host "[1/5] Instalando bibliotecas do Jarvis..."
 & $py -m pip install --disable-pip-version-check -r (Join-Path $root "requirements.txt")
 if ($LASTEXITCODE -ne 0) { throw "Falha ao instalar bibliotecas" }
-$modelPath = Join-Path $root "models\vosk-model-small-pt-0.3"
-if ((-not (Test-Path (Join-Path $modelPath "conf\model.conf"))) -and (-not (Test-Path (Join-Path $modelPath "final.mdl")))) {
-    Write-Host "[2/5] Baixando reconhecimento de voz portugues..."
-    $folder = Join-Path $root "models"
-    New-Item -ItemType Directory -Force $folder | Out-Null
-    $file = Join-Path $env:TEMP "jarvis-vosk-pt.zip"
-    Invoke-WebRequest -UseBasicParsing "https://alphacephei.com/vosk/models/vosk-model-small-pt-0.3.zip" -OutFile $file
-    Expand-Archive -LiteralPath $file -DestinationPath $folder -Force
-    Remove-Item $file -Force
-}
+Write-Host "[2/5] Preparando Whisper local para portugues..."
+$whisperPath = Join-Path $root "models\whisper"
+New-Item -ItemType Directory -Path $whisperPath -Force | Out-Null
+& $py -c "from faster_whisper import WhisperModel; m=WhisperModel('tiny',device='cpu',compute_type='int8',cpu_threads=4,download_root=r'$whisperPath'); print('WHISPER_INSTALLED')"
+if ($LASTEXITCODE -ne 0) { throw "Falha ao preparar Whisper" }
 Write-Host "[3/5] Preparando Ollama local..."
 $ollamaCmd = Get-Command ollama.exe -ErrorAction SilentlyContinue
 $ollama = if ($ollamaCmd) { $ollamaCmd.Source } else { Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe" }
